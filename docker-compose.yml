@@ -76,6 +76,31 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # redisinsight — web UI for browsing Redis data
+  # ---------------------------------------------------------------------------
+  # The official Redis GUI (equivalent to phpMyAdmin for MySQL).
+  #
+  #   http://localhost:5540
+  #
+  # The RI_* variables preload a connection named "luxiworld-redis" pointing
+  # at the redis service above — no manual setup inside the UI needed. You'll
+  # find Laravel's data under key prefixes like luxiworld_cache_*, horizon:*,
+  # luxiworld_sessions_*.
+  # ---------------------------------------------------------------------------
+  redisinsight:
+    image: redis/redisinsight
+    ports:
+      - "5540:5540"
+    environment:
+      RI_REDIS_HOST: redis
+      RI_REDIS_PORT: "6379"
+      RI_REDIS_NAME: luxiworld-redis
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   phpmyadmin:
     image: phpmyadmin/phpmyadmin
     ports:
@@ -97,6 +122,43 @@ services:
     ports:
       - "8025:8025"
     restart: unless-stopped
+
+
+  # ---------------------------------------------------------------------------
+  # scheduler — Laravel task scheduler ("cron job")
+  # ---------------------------------------------------------------------------
+  # Runs `php artisan schedule:work`, an every-minute loop that executes any
+  # due tasks defined in routes/console.php (currently: horizon:snapshot and
+  # telescope:prune). This replaces the classic host crontab entry
+  # (`* * * * * php artisan schedule:run`) — no Windows Task Scheduler needed.
+  #
+  # Like the horizon service, it bypasses the bootstrap entrypoint because the
+  # app container has already prepared .env / vendor / permissions.
+  # ---------------------------------------------------------------------------
+  scheduler:
+    build: .
+    environment:
+      CACHE_STORE: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_CLIENT: phpredis
+      REDIS_HOST: redis
+      REDIS_PASSWORD: null
+      REDIS_PORT: 6379
+    volumes:
+      - ./:/var/www
+      - /var/www/vendor
+    depends_on:
+      app:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["php artisan schedule:work"]
+    restart: unless-stopped
+
 
 volumes:
   mysql_data:
