@@ -121,6 +121,8 @@ done
 (
     echo "Running migrations..."
     php artisan migrate --force || true
+    # Vector DB migrations live on the dedicated 'vector' (PostgreSQL) connection.
+    php artisan migrate --database=vector --force || true
 
     echo "Clearing config cache..."
     php artisan config:clear || true

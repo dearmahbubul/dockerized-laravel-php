@@ -15,14 +15,15 @@ FROM php:8.4-fpm
 # -----------------------------------------------------------------------------
 # - unzip / git / curl / zip  : composer and general tooling
 # - libzip-dev                : build dependency for the zip extension
-# - default-mysql-client      : mysql / mysqldump CLI for manual DB inspection
+# - default-mysql-client      : mysql / mysqldump CLI for the MySQL DB
+# - postgresql-client, libpq-dev : psql CLI + build deps for pdo_pgsql
 # - libfreetype / libjpeg / libpng : build deps for the GD extension
 # -----------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y \
-    unzip git curl libzip-dev zip default-mysql-client \
-    libfreetype6-dev libjpeg62-turbo-dev libpng-dev \
+    unzip git curl libzip-dev zip default-mysql-client postgresql-client \
+    libfreetype6-dev libjpeg62-turbo-dev libpng-dev libpq-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install pdo pdo_mysql zip gd
+    && docker-php-ext-install pdo pdo_mysql pdo_pgsql zip gd
 
 # -----------------------------------------------------------------------------
 # pcntl + posix — required by Laravel Horizon
@@ -90,11 +91,12 @@ RUN if [ -f composer.json ]; then \
 # flips when the build context contains a materialised skeleton.
 #
 # laravel/horizon is pre-installed so the fresh skeleton can run the horizon
-# service out of the box. --no-scripts skips the app bootstrap at build time;
-# package:discover is still run so Horizon's artisan commands are registered.
+# service out of the box, and laravel/ai supplies the vector-search / OpenAI
+# SDK. --no-scripts skips the app bootstrap at build time; package:discover is
+# still run so Horizon's artisan commands are registered.
 # -----------------------------------------------------------------------------
 RUN composer create-project laravel/laravel /opt/laravel --no-interaction --prefer-dist \
-    && cd /opt/laravel && composer require laravel/horizon:^5.48 --no-interaction --prefer-dist --no-scripts \
+    && cd /opt/laravel && composer require laravel/horizon:^5.48 laravel/ai:^0.11 --no-interaction --prefer-dist --no-scripts \
     && php artisan package:discover --ansi \
     && rm -f /opt/laravel/.env /opt/laravel/database/database.sqlite
 
