@@ -1,22 +1,11 @@
 # =============================================================================
 # Docker build context ignore list
-# -----------------------------------------------------------------------------
-# Anything listed here is NOT sent to the Docker daemon as part of the build
-# context, and is NOT copied into the image by the Dockerfile's `COPY . .`.
-#
-# Rules of thumb:
-#   * Never ship secrets or VCS metadata into an image.
-#   * Keep generated/heavy trees (vendor, node_modules, caches, logs) OUT of
-#     the context — they would otherwise invalidate build-cache layers and
-#     bloat the image. vendor/ is baked separately by `composer install` in
-#     the Dockerfile, and /var/www/vendor is an anonymous volume at runtime.
-#   * The docker/ tree MUST stay in context: the Dockerfile explicitly copies
-#     docker/entrypoint.sh and docker/worker-bootstrap.sh out of it.
+# The build fetches a fresh skeleton at build time; the repo root (a clean
+# clone or the bind-mount after first boot) carries generated Laravel code
+# that must NOT be sent to the daemon or baked into the image.
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# VCS / IDE metadata
-# -----------------------------------------------------------------------------
+# VCS / IDE
 .git
 .gitignore
 .gitattributes
@@ -25,42 +14,41 @@
 *.swp
 *.swo
 
-# -----------------------------------------------------------------------------
-# Environment / secrets
-# -----------------------------------------------------------------------------
-# .env contains local secrets (APP_KEY, DB_PASSWORD...) and must never be baked.
-# .env.example and docker/.env.docker are safe templates — keep them so the
-# entrypoint can recreate .env at first boot.
+# Environment / secrets (docker/.env.docker is the safe template)
 .env
 .env.*
 !.env.example
 !docker/.env.docker
 
-# -----------------------------------------------------------------------------
-# Dependency trees — installed and managed outside the build context
-# -----------------------------------------------------------------------------
+# Generated Laravel app code (repo root is a bind mount at runtime)
+artisan
+app
+bootstrap
+config
+database
+public
+resources
+routes
+storage/*
+!storage/.gitkeep
+tests
 vendor
 node_modules
+composer.json
+composer.lock
+package.json
+package-lock.json
 
-# -----------------------------------------------------------------------------
-# Documentation / tooling (not needed at runtime)
-# -----------------------------------------------------------------------------
-*.md
-AGENTS.md
-CLAUDE.md
-composer.phar
-
-# -----------------------------------------------------------------------------
-# Compose / Docker tooling (the repo root files are not app runtime files)
-# -----------------------------------------------------------------------------
+# Compose / tooling
 docker-compose.yml
 docker-compose.yaml
 docker-compose.*.yml
 docker-compose.*.yaml
+*.md
+AGENTS.md
+composer.phar
 
-# -----------------------------------------------------------------------------
-# Laravel runtime artifacts — churn quickly and bust the build cache
-# -----------------------------------------------------------------------------
+# Runtime artifacts
 storage/logs/*
 storage/framework/cache/*
 storage/framework/sessions/*
@@ -69,20 +57,12 @@ storage/framework/views/*
 !storage/framework/cache/.gitkeep
 !storage/framework/sessions/.gitkeep
 !storage/framework/views/.gitkeep
-
-# -----------------------------------------------------------------------------
-# Build tooling / test artifacts
-# -----------------------------------------------------------------------------
 .phpunit.cache
 .phpunit.result.cache
-composer.lock.md5
 public/hot
 public/build
-debug/bar
 
-# -----------------------------------------------------------------------------
-# Windows reserved-name junk (a stray `curl -o NUL` in a bind-mounted dir)
-# -----------------------------------------------------------------------------
+# Windows reserved-name junk
 NUL
 NUL.txt
 nul

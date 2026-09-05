@@ -1,33 +1,28 @@
 # =============================================================================
-# Local development stack — Laravel + MySQL + Redis + Nginx
+# Laravel + MySQL + PostgreSQL(pgvector) + Redis + Nginx
 # =============================================================================
-#   docker compose build    # build the PHP image (first time / after changes)
-#   docker compose up -d    # start everything
+#   docker compose up -d
+#
+# Primary app DB is chosen in .env via DB_CONNECTION. Both servers run always:
+#   mysql     -> DB_CONNECTION=mysql   (default)
+#   postgres  -> DB_CONNECTION=pgsql
+# The Postgres 'vector' database (pgvector) is ALWAYS used for embeddings.
 #
 # Endpoints:
-#   Site ............ http://localhost:8080
-#   Horizon ......... http://localhost:8080/horizon   (admin users only)
-#   MailPit ......... http://localhost:8025
-#   phpMyAdmin ...... http://localhost:8081
-#   RedisInsight .... http://localhost:5540
-#   PostgreSQL ...... localhost:5433 (psql -h localhost -p 5433 -U laravel laravel_vector)
+#   Site ........ http://localhost:8080
+#   Horizon ..... http://localhost:8080/horizon
+#   MailPit ..... http://localhost:8025
+#   phpMyAdmin .. http://localhost:8081
+#   RedisInsight  http://localhost:5540
+#   MySQL ....... host port 3306
+#   PostgreSQL .. host port 5433 (psql -h localhost -p 5433 -U laravel vector)
 # =============================================================================
 
 services:
 
-  # ---------------------------------------------------------------------------
-  # app — Laravel (PHP-FPM)
-  # ---------------------------------------------------------------------------
-  # Serves the application; nginx forwards PHP requests here over FastCGI.
-  # The repo is bind-mounted so code edits appear instantly. On first boot the
-  # entrypoint prepares .env, installs dependencies, waits for MySQL and runs
-  # migrations in the background, then starts PHP-FPM.
-  # ---------------------------------------------------------------------------
   app:
     build: .
     environment:
-      # Override the host-safe .env defaults — the containers have phpredis
-      # and DB access on the docker network.
       CACHE_STORE: redis
       SESSION_DRIVER: redis
       QUEUE_CONNECTION: redis
@@ -38,32 +33,17 @@ services:
       TELESCOPE_ENABLED: "true"
     volumes:
       - ./:/var/www
-      # Keep the image-baked vendor/ instead of the host's (slow on NTFS).
       - /var/www/vendor
-      # Mount the entrypoint too, so edits apply without an image rebuild.
       - ./docker/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
     depends_on:
       mysql:
-        condition: service_healthy   # don't boot until the DB accepts queries
-      redis:
         condition: service_healthy
       postgres:
-        condition: service_healthy   # vector DB — the entrypoint migrates it too
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
-  # ---------------------------------------------------------------------------
-  # horizon — Laravel Horizon (Redis queue manager)
-  # ---------------------------------------------------------------------------
-  # Runs `php artisan horizon`, which supervises all queue workers and powers
-  # the /horizon dashboard (gated to admin users). Queued jobs are processed
-  # HERE, not by the web container.
-  #
-  # Needs the pcntl + posix extensions (installed in the Dockerfile), which is
-  # why it only runs inside this Linux container.
-  #
-  # If the project doesn't have laravel/horizon in its dependencies, the
-  # container prints a message and exits cleanly instead of crash-looping.
-  # ---------------------------------------------------------------------------
   horizon:
     build: .
     environment:
@@ -81,8 +61,10 @@ services:
       - ./docker/worker-bootstrap.sh:/usr/local/bin/worker-bootstrap.sh:ro
     depends_on:
       app:
-        condition: service_started   # wait for first-run bootstrap (.env, vendor)
+        condition: service_started
       mysql:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -90,61 +72,6 @@ services:
     command: ["/bin/sh", "-c", "if [ -d /var/www/vendor/laravel/horizon ]; then exec php artisan horizon; else echo 'laravel/horizon not installed — horizon service disabled'; fi"]
     restart: unless-stopped
 
-  # ---------------------------------------------------------------------------
-  # redisinsight — web UI for browsing Redis data
-  # ---------------------------------------------------------------------------
-  # The RI_* variables preload a connection to the redis service above, so no
-  # manual setup is needed inside the UI.
-  # ---------------------------------------------------------------------------
-  redisinsight:
-    image: redis/redisinsight
-    ports:
-      - "5540:5540"
-    environment:
-      RI_REDIS_HOST: redis
-      RI_REDIS_PORT: "6379"
-      RI_REDIS_NAME: app-redis
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # postgres — vector database for AI embeddings (RAG / semantic search)
-  # ---------------------------------------------------------------------------
-  # PostgreSQL 17 with the pgvector extension preinstalled. Dedicated to
-  # storing embeddings (e.g. OpenAI text-embedding-3-small, 1536 dims); MySQL
-  # above remains the primary application database.
-  #
-  # Host port 5433 avoids clashing with any local PostgreSQL on 5432; inside
-  # the compose network the app reaches it simply as "postgres" on 5432.
-  # ---------------------------------------------------------------------------
-  postgres:
-    image: pgvector/pgvector:pg17
-    environment:
-      POSTGRES_DB: laravel_vector
-      POSTGRES_USER: laravel
-      POSTGRES_PASSWORD: secret
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5433:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U laravel -d laravel_vector"]
-      interval: 5s
-      retries: 10
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # scheduler — Laravel task scheduler ("cron")
-  # ---------------------------------------------------------------------------
-  # Runs `php artisan schedule:work`, an every-minute loop that executes any
-  # due tasks defined in routes/console.php. This replaces a host crontab
-  # entry (`* * * * * php artisan schedule:run`).
-  #
-  # Like horizon, it bypasses the app entrypoint; worker-bootstrap.sh
-  # materialises the baked skeleton on a fresh clone before starting.
-  # ---------------------------------------------------------------------------
   scheduler:
     build: .
     environment:
@@ -165,18 +92,14 @@ services:
         condition: service_started
       mysql:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     entrypoint: ["worker-bootstrap.sh"]
     command: ["php", "artisan", "schedule:work"]
     restart: unless-stopped
 
-  # ---------------------------------------------------------------------------
-  # nginx — web server / FastCGI proxy
-  # ---------------------------------------------------------------------------
-  # Serves static files from ./public and hands *.php to the app container.
-  # Published on host port 8080 — matches APP_URL in docker/.env.docker.
-  # ---------------------------------------------------------------------------
   nginx:
     image: nginx:1.31.5-alpine
     ports:
@@ -188,9 +111,6 @@ services:
       - app
     restart: unless-stopped
 
-  # ---------------------------------------------------------------------------
-  # mysql — primary database (data persisted in the mysql_data volume)
-  # ---------------------------------------------------------------------------
   mysql:
     image: mysql:8.4
     environment:
@@ -201,21 +121,30 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
     ports:
-      # Exposed so the host test-suite (php artisan test) can reach it.
       - "3306:3306"
     healthcheck:
-      # mysqladmin must authenticate or some setups report "alive" while the
-      # server still rejects connections.
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
       interval: 5s
       retries: 10
     restart: unless-stopped
 
-  # ---------------------------------------------------------------------------
-  # redis — cache, sessions and the queue backend consumed by Horizon
-  # ---------------------------------------------------------------------------
-  # A named volume keeps queued jobs intact across container recreation.
-  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: vector
+      POSTGRES_USER: laravel
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U laravel -d vector"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
   redis:
     image: redis:8-alpine
     volumes:
@@ -226,20 +155,12 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # ---------------------------------------------------------------------------
-  # mailpit — catches every outgoing email locally
-  # ---------------------------------------------------------------------------
-  # SMTP on port 1025 (Laravel's MAIL_HOST target), web UI published below.
-  # ---------------------------------------------------------------------------
   mailpit:
     image: axllent/mailpit
     ports:
       - "8025:8025"
     restart: unless-stopped
 
-  # ---------------------------------------------------------------------------
-  # phpmyadmin — database UI (mirrors the MySQL above)
-  # ---------------------------------------------------------------------------
   phpmyadmin:
     image: phpmyadmin
     ports:
@@ -248,6 +169,19 @@ services:
       PMA_HOST: mysql
     depends_on:
       mysql:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redisinsight:
+    image: redis/redisinsight
+    ports:
+      - "5540:5540"
+    environment:
+      RI_REDIS_HOST: redis
+      RI_REDIS_PORT: "6379"
+      RI_REDIS_NAME: app-redis
+    depends_on:
+      redis:
         condition: service_healthy
     restart: unless-stopped
 

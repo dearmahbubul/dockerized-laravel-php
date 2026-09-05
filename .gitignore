@@ -1,31 +1,50 @@
-*.log
-.DS_Store
-# Windows reserved-name junk (e.g. a stray `curl -o NUL` in a bind-mounted dir)
+# =============================================================================
+# Repo is Docker-only. Laravel app code is generated at first boot into the
+# bind-mounted root, so ignore everything that would otherwise get committed.
+# =============================================================================
+
+# Laravel app (generated at first boot)
+/artisan
+/app
+/bootstrap
+/config
+/database
+/public
+/resources
+/routes
+/storage
+/tests
+/vendor
+/node_modules
+/composer.json
+/composer.lock
+/package.json
+/package-lock.json
+/vite.config.js
+/phpunit.xml
+
+# Skeleton dotfiles brought in by first-boot materialisation
+# (README.md is intentionally tracked — it's our doc, not the skeleton's)
+/.editorconfig
+/.env.example
+/.gitattributes
+/.npmrc
+/AGENTS.md
+/CLAUDE.md
+
+# Environment
+.env
+.env.*
+!/docker/.env.docker
+
+# Windows reserved-name junk (stray `curl -o NUL` in the bind mount)
 /NUL
 /NUL.txt
 /nul
-.env
-.env.backup
-.env.production
-.phpactor.json
-.phpunit.result.cache
-/.codex
-/.cursor/
-/.idea
-/.nova
-/.phpunit.cache
-/.vscode
-/.zed
-/auth.json
-/node_modules
-/public/build
-/public/fonts-manifest.dev.json
-/public/hot
-/public/storage
-/storage/*.key
-/storage/pail
-/vendor
-_ide_helper.php
-Homestead.json
-Homestead.yaml
+
+# Logs / OS / IDE
+*.log
+.DS_Store
 Thumbs.db
+.idea
+.vscode
