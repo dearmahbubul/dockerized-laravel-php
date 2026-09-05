@@ -105,7 +105,7 @@ fi
 until php -r "
 try {
     new PDO('mysql:host=mysql;port=3306;dbname=laravel', 'laravel', 'secret');
-    echo 'DB connected\n';
+    echo \"DB connected\" . PHP_EOL;
 } catch (Exception \$e) {
     exit(1);
 }

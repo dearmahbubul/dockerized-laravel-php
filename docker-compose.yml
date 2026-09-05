@@ -1,35 +1,160 @@
+# =============================================================================
+# Local development stack — Laravel + MySQL + Redis + Nginx
+# =============================================================================
+#   docker compose build    # build the PHP image (first time / after changes)
+#   docker compose up -d    # start everything
+#
+# Endpoints:
+#   Site ............ http://localhost:8080
+#   Horizon ......... http://localhost:8080/horizon   (admin users only)
+#   MailPit ......... http://localhost:8025
+#   phpMyAdmin ...... http://localhost:8081
+#   RedisInsight .... http://localhost:5540
+# =============================================================================
+
 services:
+
+  # ---------------------------------------------------------------------------
+  # app — Laravel (PHP-FPM)
+  # ---------------------------------------------------------------------------
+  # Serves the application; nginx forwards PHP requests here over FastCGI.
+  # The repo is bind-mounted so code edits appear instantly. On first boot the
+  # entrypoint prepares .env, installs dependencies, waits for MySQL and runs
+  # migrations in the background, then starts PHP-FPM.
+  # ---------------------------------------------------------------------------
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-
+    build: .
+    environment:
+      # Override the host-safe .env defaults — the containers have phpredis
+      # and DB access on the docker network.
+      CACHE_STORE: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_CLIENT: phpredis
+      REDIS_HOST: redis
+      REDIS_PASSWORD: null
+      REDIS_PORT: 6379
+      TELESCOPE_ENABLED: "true"
     volumes:
-      - .:/var/www
-      # Anonymous volume that keeps vendor/ in container-local storage:
-      # (a) the bind mount would otherwise overlay the image-baked vendor with a
-      #     host vendor/ (slow/stale), and (b) on first boot the entrypoint
-      #     copies /opt/laravel's ~100k vendor files here instead of through the
-      #     Windows bind mount (minutes -> seconds).
+      - ./:/var/www
+      # Keep the image-baked vendor/ instead of the host's (slow on NTFS).
       - /var/www/vendor
-
+      # Mount the entrypoint too, so edits apply without an image rebuild.
+      - ./docker/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
     depends_on:
       mysql:
-        condition: service_healthy
+        condition: service_healthy   # don't boot until the DB accepts queries
       redis:
         condition: service_healthy
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # horizon — Laravel Horizon (Redis queue manager)
+  # ---------------------------------------------------------------------------
+  # Runs `php artisan horizon`, which supervises all queue workers and powers
+  # the /horizon dashboard (gated to admin users). Queued jobs are processed
+  # HERE, not by the web container.
+  #
+  # Needs the pcntl + posix extensions (installed in the Dockerfile), which is
+  # why it only runs inside this Linux container.
+  #
+  # If the project doesn't have laravel/horizon in its dependencies, the
+  # container prints a message and exits cleanly instead of crash-looping.
+  # ---------------------------------------------------------------------------
+  horizon:
+    build: .
+    environment:
+      CACHE_STORE: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_CLIENT: phpredis
+      REDIS_HOST: redis
+      REDIS_PASSWORD: null
+      REDIS_PORT: 6379
+      TELESCOPE_ENABLED: "true"
+    volumes:
+      - ./:/var/www
+      - /var/www/vendor
+      - ./docker/worker-bootstrap.sh:/usr/local/bin/worker-bootstrap.sh:ro
+    depends_on:
+      app:
+        condition: service_started   # wait for first-run bootstrap (.env, vendor)
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    entrypoint: ["worker-bootstrap.sh"]
+    command: ["/bin/sh", "-c", "if [ -d /var/www/vendor/laravel/horizon ]; then exec php artisan horizon; else echo 'laravel/horizon not installed — horizon service disabled'; fi"]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # redisinsight — web UI for browsing Redis data
+  # ---------------------------------------------------------------------------
+  # The RI_* variables preload a connection to the redis service above, so no
+  # manual setup is needed inside the UI.
+  # ---------------------------------------------------------------------------
+  redisinsight:
+    image: redis/redisinsight
+    ports:
+      - "5540:5540"
+    environment:
+      RI_REDIS_HOST: redis
+      RI_REDIS_PORT: "6379"
+      RI_REDIS_NAME: app-redis
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # scheduler — Laravel task scheduler ("cron")
+  # ---------------------------------------------------------------------------
+  # Runs `php artisan schedule:work`, an every-minute loop that executes any
+  # due tasks defined in routes/console.php. This replaces a host crontab
+  # entry (`* * * * * php artisan schedule:run`).
+  #
+  # Like horizon, it bypasses the app entrypoint; worker-bootstrap.sh
+  # materialises the baked skeleton on a fresh clone before starting.
+  # ---------------------------------------------------------------------------
+  scheduler:
+    build: .
+    environment:
+      CACHE_STORE: redis
+      SESSION_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      REDIS_CLIENT: phpredis
+      REDIS_HOST: redis
+      REDIS_PASSWORD: null
+      REDIS_PORT: 6379
+      TELESCOPE_ENABLED: "true"
+    volumes:
+      - ./:/var/www
+      - /var/www/vendor
+      - ./docker/worker-bootstrap.sh:/usr/local/bin/worker-bootstrap.sh:ro
+    depends_on:
+      app:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    entrypoint: ["worker-bootstrap.sh"]
+    command: ["php", "artisan", "schedule:work"]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # nginx — web server / FastCGI proxy
+  # ---------------------------------------------------------------------------
+  # Serves static files from ./public and hands *.php to the app container.
+  # Published on host port 8080 — matches APP_URL in docker/.env.docker.
+  # ---------------------------------------------------------------------------
   nginx:
     image: nginx:1.31.5-alpine
-
     ports:
       - "8080:80"
-
     volumes:
-      - .:/var/www
+      - ./:/var/www
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-
     depends_on:
       - app
     restart: unless-stopped
@@ -48,23 +173,19 @@ services:
       - mysql_data:/var/lib/mysql
     ports:
       # Exposed so the host test-suite (php artisan test) can reach it.
-      # 33061 on the host -> 3306 in the container (avoids clashing with any
-      # locally installed MySQL).
-      - "33061:3306"
+      - "3306:3306"
     healthcheck:
-      # -proot: mysqladmin must authenticate or some setups report a false-
-      # positive "alive" even while the server rejects connections.
+      # mysqladmin must authenticate or some setups report "alive" while the
+      # server still rejects connections.
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
       interval: 5s
       retries: 10
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # redis — cache, sessions and the queue backend that Horizon consumes
+  # redis — cache, sessions and the queue backend consumed by Horizon
   # ---------------------------------------------------------------------------
-  # A named volume makes queue jobs (pending notifications, failed-job history)
-  # survive container recreation. Cache/session loss on upgrade is harmless;
-  # losing queued jobs would not be.
+  # A named volume keeps queued jobs intact across container recreation.
   # ---------------------------------------------------------------------------
   redis:
     image: redis:8-alpine
@@ -77,45 +198,9 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # redisinsight — web UI for browsing Redis data
-  # ---------------------------------------------------------------------------
-  # The official Redis GUI (equivalent to phpMyAdmin for MySQL).
-  #
-  #   http://localhost:5540
-  #
-  # The RI_* variables preload a connection named "luxiworld-redis" pointing
-  # at the redis service above — no manual setup inside the UI needed. You'll
-  # find Laravel's data under key prefixes like luxiworld_cache_*, horizon:*,
-  # luxiworld_sessions_*.
-  # ---------------------------------------------------------------------------
-  redisinsight:
-    image: redis/redisinsight
-    ports:
-      - "5540:5540"
-    environment:
-      RI_REDIS_HOST: redis
-      RI_REDIS_PORT: "6379"
-      RI_REDIS_NAME: luxiworld-redis
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
-  phpmyadmin:
-    image: phpmyadmin/phpmyadmin
-    ports:
-      - "80"
-    environment:
-      PMA_HOST: mysql
-    depends_on:
-      - mysql
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
   # mailpit — catches every outgoing email locally
   # ---------------------------------------------------------------------------
-  # Replacement for the archived MailHog project. SMTP on 1025 (Laravel's
-  # MAIL_HOST target), inbox UI published below.
+  # SMTP on port 1025 (Laravel's MAIL_HOST target), web UI published below.
   # ---------------------------------------------------------------------------
   mailpit:
     image: axllent/mailpit
@@ -123,42 +208,19 @@ services:
       - "8025:8025"
     restart: unless-stopped
 
-
   # ---------------------------------------------------------------------------
-  # scheduler — Laravel task scheduler ("cron job")
+  # phpmyadmin — database UI (mirrors the MySQL above)
   # ---------------------------------------------------------------------------
-  # Runs `php artisan schedule:work`, an every-minute loop that executes any
-  # due tasks defined in routes/console.php (currently: horizon:snapshot and
-  # telescope:prune). This replaces the classic host crontab entry
-  # (`* * * * * php artisan schedule:run`) — no Windows Task Scheduler needed.
-  #
-  # Like the horizon service, it bypasses the bootstrap entrypoint because the
-  # app container has already prepared .env / vendor / permissions.
-  # ---------------------------------------------------------------------------
-  scheduler:
-    build: .
+  phpmyadmin:
+    image: phpmyadmin
+    ports:
+      - "8081:80"
     environment:
-      CACHE_STORE: redis
-      SESSION_DRIVER: redis
-      QUEUE_CONNECTION: redis
-      REDIS_CLIENT: phpredis
-      REDIS_HOST: redis
-      REDIS_PASSWORD: null
-      REDIS_PORT: 6379
-    volumes:
-      - ./:/var/www
-      - /var/www/vendor
+      PMA_HOST: mysql
     depends_on:
-      app:
-        condition: service_started
       mysql:
         condition: service_healthy
-      redis:
-        condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
-    command: ["php artisan schedule:work"]
     restart: unless-stopped
-
 
 volumes:
   mysql_data:

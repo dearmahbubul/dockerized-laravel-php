@@ -1,4 +1,88 @@
-node_modules
-vendor
+# =============================================================================
+# Docker build context ignore list
+# -----------------------------------------------------------------------------
+# Anything listed here is NOT sent to the Docker daemon as part of the build
+# context, and is NOT copied into the image by the Dockerfile's `COPY . .`.
+#
+# Rules of thumb:
+#   * Never ship secrets or VCS metadata into an image.
+#   * Keep generated/heavy trees (vendor, node_modules, caches, logs) OUT of
+#     the context — they would otherwise invalidate build-cache layers and
+#     bloat the image. vendor/ is baked separately by `composer install` in
+#     the Dockerfile, and /var/www/vendor is an anonymous volume at runtime.
+#   * The docker/ tree MUST stay in context: the Dockerfile explicitly copies
+#     docker/entrypoint.sh and docker/worker-bootstrap.sh out of it.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# VCS / IDE metadata
+# -----------------------------------------------------------------------------
 .git
+.gitignore
+.gitattributes
+.idea
+.vscode
+*.swp
+*.swo
+
+# -----------------------------------------------------------------------------
+# Environment / secrets
+# -----------------------------------------------------------------------------
+# .env contains local secrets (APP_KEY, DB_PASSWORD...) and must never be baked.
+# .env.example and docker/.env.docker are safe templates — keep them so the
+# entrypoint can recreate .env at first boot.
 .env
+.env.*
+!.env.example
+!docker/.env.docker
+
+# -----------------------------------------------------------------------------
+# Dependency trees — installed and managed outside the build context
+# -----------------------------------------------------------------------------
+vendor
+node_modules
+
+# -----------------------------------------------------------------------------
+# Documentation / tooling (not needed at runtime)
+# -----------------------------------------------------------------------------
+*.md
+AGENTS.md
+CLAUDE.md
+composer.phar
+
+# -----------------------------------------------------------------------------
+# Compose / Docker tooling (the repo root files are not app runtime files)
+# -----------------------------------------------------------------------------
+docker-compose.yml
+docker-compose.yaml
+docker-compose.*.yml
+docker-compose.*.yaml
+
+# -----------------------------------------------------------------------------
+# Laravel runtime artifacts — churn quickly and bust the build cache
+# -----------------------------------------------------------------------------
+storage/logs/*
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+!storage/logs/.gitkeep
+!storage/framework/cache/.gitkeep
+!storage/framework/sessions/.gitkeep
+!storage/framework/views/.gitkeep
+
+# -----------------------------------------------------------------------------
+# Build tooling / test artifacts
+# -----------------------------------------------------------------------------
+.phpunit.cache
+.phpunit.result.cache
+composer.lock.md5
+public/hot
+public/build
+debug/bar
+
+# -----------------------------------------------------------------------------
+# Windows reserved-name junk (a stray `curl -o NUL` in a bind-mounted dir)
+# -----------------------------------------------------------------------------
+NUL
+NUL.txt
+nul

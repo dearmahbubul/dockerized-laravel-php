@@ -1,5 +1,9 @@
 *.log
 .DS_Store
+# Windows reserved-name junk (e.g. a stray `curl -o NUL` in a bind-mounted dir)
+/NUL
+/NUL.txt
+/nul
 .env
 .env.backup
 .env.production
