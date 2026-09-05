@@ -6,10 +6,19 @@ services:
 
     volumes:
       - .:/var/www
+      # Anonymous volume that keeps vendor/ in container-local storage:
+      # (a) the bind mount would otherwise overlay the image-baked vendor with a
+      #     host vendor/ (slow/stale), and (b) on first boot the entrypoint
+      #     copies /opt/laravel's ~100k vendor files here instead of through the
+      #     Windows bind mount (minutes -> seconds).
+      - /var/www/vendor
 
     depends_on:
-      db:
+      mysql:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
 
   nginx:
     image: nginx:1.31.5-alpine
@@ -23,27 +32,72 @@ services:
 
     depends_on:
       - app
+    restart: unless-stopped
 
-  db:
-    image: postgres:18-alpine
-
+  # ---------------------------------------------------------------------------
+  # mysql — primary database (data persisted in the mysql_data volume)
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.4
     environment:
-      POSTGRES_DB: ${DB_DATABASE:-laravel}
-      POSTGRES_USER: ${DB_USERNAME:-laravel}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
-
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: laravel
+      MYSQL_USER: laravel
+      MYSQL_PASSWORD: secret
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-
+      - mysql_data:/var/lib/mysql
     ports:
-      - "5432:5432"
-
+      # Exposed so the host test-suite (php artisan test) can reach it.
+      # 33061 on the host -> 3306 in the container (avoids clashing with any
+      # locally installed MySQL).
+      - "33061:3306"
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${DB_USERNAME:-laravel} -d ${DB_DATABASE:-laravel}" ]
+      # -proot: mysqladmin must authenticate or some setups report a false-
+      # positive "alive" even while the server rejects connections.
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
       interval: 5s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # redis — cache, sessions and the queue backend that Horizon consumes
+  # ---------------------------------------------------------------------------
+  # A named volume makes queue jobs (pending notifications, failed-job history)
+  # survive container recreation. Cache/session loss on upgrade is harmless;
+  # losing queued jobs would not be.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:8-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    ports:
+      - "80"
+    environment:
+      PMA_HOST: mysql
+    depends_on:
+      - mysql
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # mailpit — catches every outgoing email locally
+  # ---------------------------------------------------------------------------
+  # Replacement for the archived MailHog project. SMTP on 1025 (Laravel's
+  # MAIL_HOST target), inbox UI published below.
+  # ---------------------------------------------------------------------------
+  mailpit:
+    image: axllent/mailpit
+    ports:
+      - "8025:8025"
+    restart: unless-stopped
 
 volumes:
-  postgres_data:
+  mysql_data:
+  redis_data:
