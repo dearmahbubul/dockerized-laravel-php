@@ -38,6 +38,16 @@ if [ -f /opt/stubs/database.php ] && [ ! -f config/database.php.bak ]; then
 fi
 
 # -----------------------------------
+# 3b. TLS certs (nginx serves 443). Generate per-clone self-signed certs
+# if missing — the cert/key are git-ignored so each machine gets its own.
+# Replace with an mkcert cert to get rid of browser warnings locally.
+# -----------------------------------
+if [ -f docker/nginx/tools/generate-ssl.sh ] && [ ! -s docker/nginx/certs/localhost.crt ]; then
+    echo "Generating self-signed TLS certs..."
+    sh docker/nginx/tools/generate-ssl.sh
+fi
+
+# -----------------------------------
 # 4. Vendor
 # -----------------------------------
 if [ ! -f vendor/autoload.php ]; then

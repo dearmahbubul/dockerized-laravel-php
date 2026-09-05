@@ -17,6 +17,8 @@ database for AI embeddings (RAG / semantic search).
 - [Endpoints](#endpoints)
 - [Choosing the primary database](#choosing-the-primary-database)
 - [Vector database & RAG](#vector-database--rag)
+- [PHP configuration](#php-configuration)
+- [HTTPS (self-signed)](#https-self-signed)
 - [Environment variables](#environment-variables)
 - [Common commands](#common-commands)
 - [Troubleshooting](#troubleshooting)
@@ -36,8 +38,10 @@ database for AI embeddings (RAG / semantic search).
   out of the box.
 - **Redis** for cache, sessions and queues.
 - **Mailpit** for catching outgoing mail locally.
-- **phpMyAdmin + RedisInsight** for database browsing.
+- **phpMyAdmin + pgAdmin + RedisInsight** for database browsing.
 - **Xdebug** installed but disabled, ready when you need it.
+- **Tunable PHP config** via one bind-mounted ini file.
+- **HTTPS** (self-signed) built in out of the box.
 
 ---
 
@@ -61,9 +65,11 @@ Then open:
 | What            | URL                          |
 | --------------- | ---------------------------- |
 | Laravel app     | http://localhost:8080        |
+| Laravel app (TLS) | https://localhost:8443     |
 | Horizon         | http://localhost:8080/horizon |
 | Mailpit         | http://localhost:8025        |
 | phpMyAdmin      | http://localhost:8081        |
+| pgAdmin (Postgres) | http://localhost:8082     |
 | RedisInsight    | http://localhost:5540        |
 
 The first boot takes a few minutes while the image is built and the Laravel
@@ -82,8 +88,9 @@ dependencies are installed. Subsequent boots are fast.
 3. A `.env` file is created from `docker/.env.docker` (only if one doesn't
    exist yet). Config is patched to add the `vector` database connection.
 4. An `APP_KEY` is generated (kept across restarts).
-5. The entrypoint waits for the primary DB and the vector DB.
-6. Migrations run in the background for both the primary DB and the `vector`
+5. Self-signed TLS certs are generated for HTTPS.
+6. The entrypoint waits for the primary DB and the vector DB.
+7. Migrations run in the background for both the primary DB and the `vector`
    DB, then PHP-FPM starts and nginx serves the site.
 
 Result: a working, latest Laravel app wired to all services with zero setup.
@@ -95,11 +102,13 @@ Result: a working, latest Laravel app wired to all services with zero setup.
 | Service        | Host port | Internal        | Notes                              |
 | -------------- | --------- | --------------- | ---------------------------------- |
 | Laravel site   | `8080`    | `app:80/9000`   | nginx → PHP-FPM                    |
+| Laravel site   | `8443`    | `app:443`       | HTTPS (self-signed)                |
 | MySQL          | `3306`    | `mysql:3306`    | user `laravel` / pass `secret`     |
 | PostgreSQL     | `5433`    | `postgres:5432` | user `laravel` / pass `secret`     |
 | Redis          | —         | `redis:6379`    | no auth                            |
 | Mailpit        | `8025`    | `mailpit:1025`  | SMTP on 1025, web UI on 8025       |
 | phpMyAdmin     | `8081`    | —               | for MySQL                          |
+| pgAdmin        | `8082`    | —               | for PostgreSQL (admin@example.com / admin) |
 | RedisInsight   | `5540`    | —               | preloaded with the app's Redis     |
 
 Database credentials match `.env` defaults:
@@ -217,11 +226,65 @@ docker compose exec app php artisan migrate --database=vector --force
 
 ---
 
+## PHP configuration
+
+Custom PHP settings live in **`docker/php/zz-custom.ini`**, bind-mounted
+read-only into the `app`, `horizon` and `scheduler` containers (the `zz-`
+prefix makes PHP load it last so it overrides the image defaults). It ships
+with sane dev values:
+
+```ini
+memory_limit = 256M
+upload_max_filesize = 20M
+post_max_size = 20M
+max_execution_time = 60
+display_errors = On
+```
+
+Edit the file, restart the PHP processes, and verify:
+
+```bash
+docker compose restart app horizon scheduler
+docker compose exec app php -i | grep -E 'memory_limit|upload_max_filesize'
+```
+
+No rebuild needed. To see all loaded directives: `docker compose exec app php -i`.
+
+---
+
+## HTTPS (self-signed)
+
+HTTPS runs out of the box at **https://localhost:8443**. On the first boot the
+app entrypoint auto-generates a self-signed cert into `docker/nginx/certs/`
+(git-ignored, one per clone), so every clone gets HTTPS with zero setup.
+The cert is served; browsers will still warn that it's untrusted.
+
+To remove the warning, replace the cert with a locally-trusted one via
+[mkcert](https://github.com/FiloSottile/mkcert):
+
+```bash
+mkcert -install
+mkcert -cert-file docker/nginx/certs/localhost.crt \
+       -key-file  docker/nginx/certs/localhost.key localhost 127.0.0.1
+docker compose restart nginx
+```
+
+Or just re-run the generator manually if you ever want to refresh the
+self-signed pair:
+
+```bash
+docker compose exec -T app sh docker/nginx/tools/generate-ssl.sh
+```
+
+---
+
 ## Environment variables
 
-Everything important lives in `.env` (generated from
-`docker/.env.docker` on first boot). Container-level overrides are in
-`docker-compose.yml` under each service's `environment:`.
+Everything important lives in `.env` (generated from `docker/.env.docker` on
+first boot). Container-level defaults (Redis, queue backend) are centralized
+once as YAML anchors at the top of `docker-compose.yml` and merged into the
+`app`, `horizon`, and `scheduler` services — change a value in one place and
+it applies to all three.
 
 | Variable                  | Default                     | Purpose                             |
 | ------------------------- | --------------------------- | ----------------------------------- |
@@ -280,14 +343,18 @@ Installed but off by default. Enable via a `php` ini override or a
 ```
 .
 ├── Dockerfile                 # PHP image: extensions, composer, baked skeleton
-├── docker-compose.yml         # all services + volumes
+├── docker-compose.yml         # all services + volumes + shared env anchors
 ├── .gitignore                 # ignores generated Laravel files
 ├── .dockerignore              # keeps generated files out of the build
 └── docker/
     ├── .env.docker            # .env template (also documents the DB toggle)
-    ├── entrypoint.sh          # app bootstrap (materialise, .env, key, migrate)
+    ├── entrypoint.sh          # app bootstrap (materialise, .env, key, TLS, migrate)
     ├── worker-bootstrap.sh    # bootstrap for horizon / scheduler
-    ├── nginx/default.conf     # nginx vhost (root = /var/www/public)
+    ├── php/zz-custom.ini      # custom PHP settings (bind-mounted)
+    ├── nginx/
+    │   ├── default.conf       # nginx vhost: HTTP (80) + HTTPS (443 ssl)
+    │   ├── certs/             # generated self-signed certs (git-ignored)
+    │   └── tools/generate-ssl.sh  # creates the certs
     ├── initdb/01-create-databases.sh  # creates laravel + vector DBs, pgvector
     └── stubs/database.php     # patched config with the vector connection
 ```
