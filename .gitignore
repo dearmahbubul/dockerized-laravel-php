@@ -36,6 +36,10 @@
 .env
 .env.*
 !/docker/.env.docker
+!/docker/.env.prod.example
+
+# Production backups
+/backups/
 
 # Windows reserved-name junk (stray `curl -o NUL` in the bind mount)
 /NUL

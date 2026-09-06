@@ -19,6 +19,7 @@ database for AI embeddings (RAG / semantic search).
 - [Vector database & RAG](#vector-database--rag)
 - [PHP configuration](#php-configuration)
 - [HTTPS (self-signed)](#https-self-signed)
+- [Production deployment](#production-deployment)
 - [Environment variables](#environment-variables)
 - [Common commands](#common-commands)
 - [Troubleshooting](#troubleshooting)
@@ -281,6 +282,80 @@ docker compose exec -T app sh docker/nginx/tools/generate-ssl.sh
 
 ---
 
+## Production deployment
+
+The dev stack above is for developing. For production, a different artifact
+ships: the app is built **once** in CI into an immutable, non-root image, and
+deployed with `docker-compose.prod.yml`. The dev conveniences are gone —
+no self-bootstrap, no debug UIs, no host-exposed databases, no self-signed
+TLS generation.
+
+```
+docker-compose.prod.yml      # hardened single-host deployment
+Dockerfile.prod              # CI-built production image (multi-stage)
+docker/nginx/prod.conf       # TLS-only nginx (+ security headers, gzip, cache)
+docker/.env.prod.example     # template -> .env.prod (git-ignored, real secrets)
+docker/backup.sh / restore.sh
+```
+
+### The production image (`Dockerfile.prod`)
+
+Built by CI **from your Laravel application repo** (the context is the app, not
+this Docker-only repo):
+
+- multi-stage: Composer deps with `--no-dev`, Vite assets pre-built, then a
+  lean runtime using `php:8.4-fpm`.
+- non-root (`USER www-data`), runs `php-fpm` directly — no boot side effects.
+- no Xdebug, no debug/extras, `APP_DEBUG=false` env.
+
+```bash
+docker build -f Dockerfile.prod -t ghcr.io/you/app:1.2.3 .
+docker push ghcr.io/you/app:1.2.3
+```
+
+### Deploy (single host)
+
+```bash
+cp docker/.env.prod.example .env.prod    # fill in: APP_KEY, DB/root/redis secrets, SMTP
+openssl rand -base64 32                  # use as APP_KEY
+
+# real TLS certs go in docker/nginx/certs/ as server.crt / server.key,
+# or terminate TLS at an ingress/CDN in front of 80/443.
+
+export APP_IMAGE=ghcr.io/you/app:1.2.3
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+
+# one-shot migrations (also applies vector DB):
+docker compose -f docker-compose.prod.yml --env-file .env.prod --profile jobs run --rm migrate
+```
+
+Security posture: containers run **read-only rootfs**, non-root, `cap_drop:
+ALL`, `no-new-privileges`, `init`, resource limits; only nginx exposes ports
+(80/443); MySQL/Postgres/Redis have no host ports; Redis requires a password;
+all services log to stdout with rotation; secrets live in the ignored
+`.env.prod`.
+
+Backups (cron it on the host):
+
+```bash
+./docker/backup.sh            # mysql + postgres (laravel & vector), gzip -> backups/
+./docker/backup.sh --all      # + redis snapshot + app storage
+./docker/restore.sh           # list, then restore a file to a database
+```
+
+### What production **still** needs from you
+
+- Kubernetes (or scale out) instead of one host, with an ingress
+  + cert-manager and database on managed services (RDS/Cloud SQL).
+- A real CI pipeline: test → build → scan → tag → push.
+- Central logging/metrics/tracing and uptime alerts.
+- Off-site backups.
+
+This file documents the shape; in a real deploy you'd replace `APP_IMAGE` with
+your registry image and run it behind your own network/ingress.
+
+---
+
 ## Environment variables
 
 Everything important lives in `.env` (generated from `docker/.env.docker` on
@@ -333,6 +408,12 @@ docker compose logs -f app           # follow app logs
 docker compose exec app bash         # shell into the app container
 docker compose exec app php artisan migrate --force          # migrate primary DB
 docker compose exec app php artisan migrate --database=vector --force  # migrate vector DB
+
+# ---- production (docker-compose.prod.yml) ----
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d   # deploy
+docker compose -f docker-compose.prod.yml --env-file .env.prod --profile jobs run --rm migrate   # one-shot migrations
+export APP_IMAGE=ghcr.io/you/app:1.2.3                               # pick deployed image
+docker/backup.sh && docker/backup.sh --all                            # backups
 ```
 
 ---
@@ -363,17 +444,22 @@ Installed but off by default. Enable via a `php` ini override or a
 
 ```
 .
-├── Dockerfile                 # PHP image: extensions, composer, baked skeleton
-├── docker-compose.yml         # all services + volumes + shared env anchors
-├── .gitignore                 # ignores generated Laravel files
+├── Dockerfile                 # dev PHP image: extensions, composer, baked skeleton
+├── Dockerfile.prod            # production image (CI-built, multi-stage, non-root)
+├── docker-compose.yml         # dev: all services + volumes + shared env anchors
+├── docker-compose.prod.yml    # production: hardened, immutable, one-shot migrate
+├── .gitignore                 # ignores generated Laravel files + .env.prod
 ├── .dockerignore              # keeps generated files out of the build
 └── docker/
-    ├── .env.docker            # .env template (also documents the DB toggle)
+    ├── .env.docker            # dev .env template (also documents the DB toggle)
+    ├── .env.prod.example      # production env template -> .env.prod (secrets)
     ├── entrypoint.sh          # app bootstrap (materialise, .env, key, TLS, migrate)
     ├── worker-bootstrap.sh    # bootstrap for horizon / scheduler
+    ├── backup.sh / restore.sh # DB/volume backup & restore (prod)
     ├── php/zz-custom.ini      # custom PHP settings (bind-mounted)
     ├── nginx/
-    │   ├── default.conf       # nginx vhost: HTTP (80) + HTTPS (443 ssl)
+    │   ├── default.conf       # dev vhost: HTTP (80) + HTTPS (443 ssl)
+    │   ├── prod.conf          # prod vhost: TLS-only, headers, gzip, caching
     │   ├── certs/             # generated self-signed certs (git-ignored)
     │   └── tools/generate-ssl.sh  # creates the certs
     ├── initdb/01-create-databases.sh  # creates laravel + vector DBs, pgvector
