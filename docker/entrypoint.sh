@@ -7,25 +7,27 @@
 #  4. Ensure APP_KEY
 #  5. Wait for the primary DB + the vector DB
 #  6. Run migrations in the background, then start PHP-FPM
+#
+# The app code lives in the `app_code` named volume — fresh on first boot,
+# persistent afterwards. The repo itself stays Docker-only.
 # =============================================================================
 set -e
 
 cd /var/www
 
 # -----------------------------------
-# 1. Laravel skeleton
+# 1. Laravel skeleton (first boot only)
 # -----------------------------------
 if [ ! -f artisan ]; then
     echo "Laravel not found. Materialising baked skeleton (/opt/laravel)..."
-    # -n: never overwrite existing repo files (.gitignore, docker-compose.yml, ...)
-    cp -an /opt/laravel/. .
+    cp -a /opt/laravel/. .
 fi
 
 # -----------------------------------
 # 2. .env
 # -----------------------------------
 if [ ! -s .env ]; then
-    cp docker/.env.docker .env
+    cp /docker/.env.docker .env
 fi
 
 # -----------------------------------
@@ -39,12 +41,18 @@ fi
 
 # -----------------------------------
 # 3b. TLS certs (nginx serves 443). Generate per-clone self-signed certs
-# if missing — the cert/key are git-ignored so each machine gets its own.
+# into /opt/certs (= the repo's docker/nginx/certs, bind-mounted rw) if
+# missing — the cert/key are git-ignored so each clone gets its own.
 # Replace with an mkcert cert to get rid of browser warnings locally.
 # -----------------------------------
-if [ -f docker/nginx/tools/generate-ssl.sh ] && [ ! -s docker/nginx/certs/localhost.crt ]; then
+if [ -d /opt/certs ] && [ ! -s /opt/certs/localhost.crt ]; then
     echo "Generating self-signed TLS certs..."
-    sh docker/nginx/tools/generate-ssl.sh
+    openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout /opt/certs/localhost.key \
+        -out /opt/certs/localhost.crt \
+        -days 825 \
+        -subj "/C=US/ST=Local/L=Local/O=Dev/CN=localhost" \
+        -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
 fi
 
 # -----------------------------------

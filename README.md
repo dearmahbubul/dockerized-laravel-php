@@ -36,6 +36,7 @@ database for AI embeddings (RAG / semantic search).
   extension pre-created, ready for embeddings.
 - **Laravel Horizon** baked in — queue dashboard, workers and scheduler run
   out of the box.
+- **Node + Vite dev server** always on for React/Vue/JS compilation with HMR.
 - **Redis** for cache, sessions and queues.
 - **Mailpit** for catching outgoing mail locally.
 - **phpMyAdmin + pgAdmin + RedisInsight** for database browsing.
@@ -81,10 +82,11 @@ dependencies are installed. Subsequent boots are fast.
 
 1. Docker builds the PHP image. It includes a **pre-baked Laravel skeleton**
    (`composer create-project` + Horizon + Laravel AI) at `/opt/laravel`, so no
-   clone ever has to download an app through the bind mount itself.
-2. The `app` container starts and, if `artisan` is missing from the project
-   directory, copies the baked skeleton into `/var/www` (your working
-   directory). Existing files are **never overwritten**.
+   clone ever has to download an app through the internet.
+2. The `app` container starts and, if `artisan` is missing from the `app_code`
+   volume, copies the baked skeleton into `/var/www` **inside a Docker named
+   volume** — the repo folder on your disk is never touched and stays
+   Docker-only.
 3. A `.env` file is created from `docker/.env.docker` (only if one doesn't
    exist yet). Config is patched to add the `vector` database connection.
 4. An `APP_KEY` is generated (kept across restarts).
@@ -110,6 +112,7 @@ Result: a working, latest Laravel app wired to all services with zero setup.
 | phpMyAdmin     | `8081`    | —               | for MySQL                          |
 | pgAdmin        | `8082`    | —               | for PostgreSQL (admin@example.com / admin) |
 | RedisInsight   | `5540`    | —               | preloaded with the app's Redis     |
+| Vite dev server | `5173`    | `node:5173`     | HMR for React/Vue/JS — see below   |
 
 Database credentials match `.env` defaults:
 
@@ -300,6 +303,25 @@ it applies to all three.
 
 ---
 
+## Frontend (Vite)
+
+A `node` service runs `npm install` once and then `npm run dev -- --host
+0.0.0.0`, exposing the dev server at **http://localhost:5173**.
+
+- On first boot it writes `public/hot`, so Laravel automatically serves your
+  JS/CSS bundles through the dev server with hot module replacement (HMR) —
+  edit your React/Vue components and the browser updates instantly.
+- `npm` packages live inside the `app_code` volume (not on disk).
+- For production-style assets instead, stop the `node` service and run a build
+  inside the `app` container:
+
+```bash
+docker compose stop node
+docker compose exec app npm exec -- npm run build
+```
+
+---
+
 ## Common commands
 
 ```bash
@@ -327,9 +349,8 @@ Rare race — the entrypoint already waits for healthy DBs. Check health with
 
 **Want to start from scratch / reset the app**
 ```bash
-docker compose down -v        # delete app data (MySQL, Postgres, Redis volumes)
-git clean -fdx                # remove generated Laravel files from this folder
-docker compose up -d          # boots a fresh Laravel again
+docker compose down -v        # deletes app_code + DB volumes; boots a fresh Laravel again
+docker compose up -d
 ```
 
 **Xdebug**
