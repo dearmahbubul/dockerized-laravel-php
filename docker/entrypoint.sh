@@ -40,6 +40,15 @@ if [ -f /opt/stubs/database.php ] && [ ! -f config/database.php.bak ]; then
 fi
 
 # -----------------------------------
+# 3a. Patch vite.config.js (dev server must advertise localhost, not 0.0.0.0)
+# -----------------------------------
+if [ -f /opt/stubs/vite.config.js ] && [ ! -f vite.config.js.bak ]; then
+    echo "Patching vite.config.js (hmr host: localhost)..."
+    cp vite.config.js vite.config.js.bak
+    cp /opt/stubs/vite.config.js vite.config.js
+fi
+
+# -----------------------------------
 # 3b. TLS certs (nginx serves 443). Generate per-clone self-signed certs
 # into /opt/certs (= the repo's docker/nginx/certs, bind-mounted rw) if
 # missing — the cert/key are git-ignored so each clone gets its own.

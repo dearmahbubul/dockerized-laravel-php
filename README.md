@@ -380,12 +380,17 @@ it applies to all three.
 
 ## Frontend (Vite)
 
-A `node` service runs `npm install` once and then `npm run dev -- --host
-0.0.0.0`, exposing the dev server at **http://localhost:5173**.
+A `node` service runs `npm install` once and then `npm run dev`, exposing the
+dev server at **http://localhost:5173**.
 
 - On first boot it writes `public/hot`, so Laravel automatically serves your
   JS/CSS bundles through the dev server with hot module replacement (HMR) —
   edit your React/Vue components and the browser updates instantly.
+- `vite.config.js` is patched at first boot (like `config/database.php`) so the
+  dev server binds to `0.0.0.0` inside the container but advertises
+  `localhost` in `public/hot` — browsers block `0.0.0.0`, which would leave
+  the page unstyled. Accessing from another machine? Change
+  `server.hmr.host` in `vite.config.js` to your hostname.
 - `npm` packages live inside the `app_code` volume (not on disk).
 - For production-style assets instead, stop the `node` service and run a build
   inside the `app` container:

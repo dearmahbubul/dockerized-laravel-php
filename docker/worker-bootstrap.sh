@@ -34,6 +34,15 @@ if [ -f /opt/stubs/database.php ] && [ ! -f config/database.php.bak ]; then
 fi
 
 # -----------------------------------
+# 3a. Patch vite.config.js (dev server must advertise localhost, not 0.0.0.0)
+# -----------------------------------
+if [ -f /opt/stubs/vite.config.js ] && [ ! -f vite.config.js.bak ]; then
+    echo "Worker: patching vite.config.js (hmr host: localhost)..."
+    cp vite.config.js vite.config.js.bak
+    cp /opt/stubs/vite.config.js vite.config.js
+fi
+
+# -----------------------------------
 # 4. Vendor
 # -----------------------------------
 if [ ! -f vendor/autoload.php ]; then
